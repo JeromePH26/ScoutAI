@@ -1,40 +1,49 @@
 import sqlite3
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 
 DB_NAME = "scout_ai.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
+    # Volles Schema für Mastermind Signale
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS picks (
+        CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match TEXT,
-            expert_source TEXT,
-            predicted_pick TEXT,
+            match_key TEXT,
+            bet_key TEXT,
+            consensus_reached TEXT,
+            sources TEXT,
             timestamp DATETIME
         )
     ''')
     conn.commit()
     conn.close()
 
-def is_duplicate(match, expert_source, predicted_pick):
+def process_consensus(match, bet, source_name, full_json):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id FROM picks
-        WHERE match = ? AND expert_source = ? AND predicted_pick = ?
-    ''', (match, expert_source, predicted_pick))
-    result = cursor.fetchone()
-    conn.close()
-    return result is not None
 
-def save_pick(match, expert_source, predicted_pick):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+    match_key = match.lower().strip()
+    bet_key = bet.lower().strip()
+
+    # Prüfen, ob bereits gesendet (letzte 36h)
     cursor.execute('''
-        INSERT INTO picks (match, expert_source, predicted_pick, timestamp)
-        VALUES (?, ?, ?, ?)
-    ''', (match, expert_source, predicted_pick, datetime.now()))
-    conn.commit()
-    conn.close()
+        SELECT id FROM signals
+        WHERE match_key = ? AND bet_key = ?
+        AND timestamp > datetime('now', '-36 hours')
+    ''', (match_key, bet_key))
+
+    if cursor.fetchone():
+        conn.close()
+        return 0, False
+    else:
+        con_val = full_json.get("consensus_reached", "DIRECT")
+        cursor.execute('''
+            INSERT INTO signals (match_key, bet_key, consensus_reached, sources, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (match_key, bet_key, str(con_val), source_name, datetime.now()))
+        conn.commit()
+        conn.close()
+        return 1, True
