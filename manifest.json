@@ -1,0 +1,14 @@
+{
+  "version": "3.0",
+  "footystats": false,
+  "start_sources": 20,
+  "new_files": [
+    "scout_ai/source_registry.py"
+  ],
+  "replace_files": [
+    "scout_ai/main.py",
+    "scout_ai/scraper.py",
+    "scout_ai/ai_analyzer.py",
+    "scout_ai/quant_engine.py"
+  ]
+}
