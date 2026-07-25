@@ -1,94 +1,126 @@
-import time
-import os
-import json
 import logging
+import os
 import sys
-import random
+import time
+from datetime import datetime, timezone
 
-# Absoluter Import-Pfad für Server-Umgebungen
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-logging.basicConfig(
-    filename='scout_ai/debug.log',
-    level=logging.ERROR,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
 try:
-    from scout_ai.scraper import get_feeds
     from scout_ai.ai_analyzer import analyze_snippet
     from scout_ai.database import init_db, process_consensus
     from scout_ai.notifier import send_telegram_alert
+    from scout_ai.quant_engine import build_compact_bundle, cluster_articles, rank_clusters
+    from scout_ai.scraper import get_feeds
+    from scout_ai.source_registry import by_tier, enabled_sources
 except ImportError:
-    # Fallback für lokale Ausführung
-    from scraper import get_feeds
     from ai_analyzer import analyze_snippet
     from database import init_db, process_consensus
     from notifier import send_telegram_alert
+    from quant_engine import build_compact_bundle, cluster_articles, rank_clusters
+    from scraper import get_feeds
+    from source_registry import by_tier, enabled_sources
 
-# --- SPY-MASTER MATRIX v5.6 ---
-SHADOW = ['site:twitter.com "confirmed" "injury" football', 'site:twitter.com "lineup leak"', '"betfair exchange" "unusual volume"']
-COMMUNITY = ["https://www.reddit.com/r/soccerbetting/.rss", "https://www.reddit.com/r/sportsbook/.rss", "https://www.reddit.com/r/mma/.rss"]
-GLOBAL = ["best bets expert analysis", "asian handicap picks today", "nba player props predictions", "football statistical analysis"]
-WIRES = ["https://www.espn.com/espn/rss/news", "https://www.hltv.org/rss/news", "https://www.betfair.com/hub/feed/"]
 
-def pulse_check(queries, mode_name, is_search=False):
-    print(f"[{time.strftime('%H:%M:%S')}] PULSE: Gathering {mode_name}...")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    if is_search:
-        target_urls = [f"https://news.google.com/rss/search?q={q.replace(' ', '+')}+when:1d&hl=en-US" for q in queries]
-    else:
-        target_urls = queries
+MAX_AI_CALLS_PER_PULSE = int(os.getenv("MAX_AI_CALLS_PER_PULSE", "5"))
+MAX_ARTICLES_PER_CLUSTER = int(os.getenv("MAX_ARTICLES_PER_CLUSTER", "8"))
+PULSE_SECONDS = int(os.getenv("PULSE_SECONDS", "300"))
 
-    articles = get_feeds(target_urls)
-    if not articles: return
+_last_tier_run: dict[str, float] = {}
 
-    bundle_text = ""
-    for i, art in enumerate(articles[:30]):
-        bundle_text += f"\n--- QUELLE {i+1} ({art.get('title')}) ---\n{art.get('snippet')}\n"
 
-    print(f"   [*] AI-BUNDLE-ANALYSIS: {min(len(articles), 30)}/30 Top-Quellen werden verglichen...", end=" ")
+def _due_sources() -> list:
+    now = time.time()
+    due = []
+    for source in enabled_sources():
+        last = _last_tier_run.get(source.name, 0.0)
+        if now - last >= source.interval_minutes * 60:
+            due.append(source)
+            _last_tier_run[source.name] = now
+    return due
 
-    analyses = analyze_snippet(bundle_text, is_bundle=True)
 
-    if analyses and isinstance(analyses, list):
-        print(f"[+] {len(analyses)} SIGNALE GEFUNDEN")
+def pulse_check() -> None:
+    sources = _due_sources()
+    if not sources:
+        print("[DISCOVERY] Noch keine Quelle fällig.")
+        return
+
+    print(
+        f"\n[{datetime.now(timezone.utc).isoformat(timespec='seconds')}] "
+        f"GLOBAL PULSE | Quellen={len(sources)}"
+    )
+    articles = get_feeds(sources)
+    if not articles:
+        print("[DISCOVERY] Keine neuen relevanten Artikel.")
+        return
+
+    clusters = cluster_articles(articles)
+    ranked = rank_clusters(clusters)
+    print(
+        f"[QUANT] Artikel={len(articles)} Cluster={len(clusters)} "
+        f"Analyze={sum(score.decision == 'ANALYZE' for _, score in ranked)} "
+        f"Watch={sum(score.decision == 'WATCH' for _, score in ranked)}"
+    )
+
+    calls = 0
+    for cluster, score in ranked:
+        print(
+            f"[QUANT] {score.fingerprint} n={score.article_count} "
+            f"sources={score.independent_sources} confidence={score.confidence} "
+            f"decision={score.decision}"
+        )
+        if score.decision != "ANALYZE":
+            continue
+        if calls >= MAX_AI_CALLS_PER_PULSE:
+            print("[QUANT] Gemini-Budget erreicht.")
+            break
+
+        calls += 1
+        bundle = build_compact_bundle(cluster, score, MAX_ARTICLES_PER_CLUSTER)
+        analyses = analyze_snippet(bundle, is_bundle=True)
+
         for signal in analyses:
-            if signal.get("status") == "ACCEPT":
-                match = signal.get("match", "Unknown")
-                bet = signal.get("recommendation", {}).get("bet", "Unknown")
+            status = signal.get("status")
+            if status not in {"ACTION", "WATCH"}:
+                continue
 
-                _, is_new = process_consensus(match, bet, "Cross-Ref Engine", signal)
+            signal["local_quant"] = score.as_dict()
+            signal["source_count"] = score.independent_sources
+            signal["article_count"] = score.article_count
+            match = signal.get("match", "UNKNOWN")
+            market = signal.get("market") or {}
+            bet = market.get("bet", "NO_MARKET")
 
-                if is_new:
-                    print(f"   [!!!] SIGNAL FIRED: {match}")
-                    signal["consensus_reached"] = f"CROSS-REFERENCED ({mode_name})"
-                    send_telegram_alert(signal)
-    else:
-        print("[-] KEIN VALIDER KONSENS")
+            # Ohne echte Marktquote wird niemals ACTION erzwungen.
+            if status == "ACTION" and not market.get("market_odds"):
+                signal["status"] = "WATCH"
+                status = "WATCH"
 
-def main():
+            _, is_new = process_consensus(match, bet, "Global Consensus v3", signal)
+            if is_new:
+                signal["consensus_reached"] = (
+                    f"{status} | LOCAL {score.confidence}/100 | "
+                    f"{score.independent_sources} unabhängige Quellen"
+                )
+                send_telegram_alert(signal)
+                print(f"[SIGNAL] {status}: {match} | {bet}")
+
+
+def main() -> None:
     init_db()
-    print("=== SCOUT-AI MASTERMIND v5.9 | RAILWAY EDITION ===")
+    print("=== SCOUT-AI GLOBAL CONSENSUS v3.0 ===")
+    print(f"[REGISTRY] {len(enabled_sources())} Startquellen geladen.")
 
     while True:
         try:
-            tasks = [
-                (SHADOW, "SHADOW-LEAKS", True),
-                (COMMUNITY, "REDDIT-FEED", False),
-                (GLOBAL, "GLOBAL-MARKET", True),
-                (WIRES, "INSTITUTIONAL-WIRE", False)
-            ]
-            random.shuffle(tasks)
+            pulse_check()
+        except Exception:
+            logging.exception("Critical pulse error")
+        time.sleep(PULSE_SECONDS)
 
-            for queries, name, is_search in tasks:
-                pulse_check(queries, name, is_search)
-                wait = random.randint(45, 90)
-                time.sleep(wait)
-
-        except Exception as e:
-            logging.error(f"Critical Loop Error: {e}")
-            time.sleep(60)
 
 if __name__ == "__main__":
     main()
