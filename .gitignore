@@ -1,15 +1,17 @@
-*.iml
-.gradle
-/local.properties
-.idea/
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-
 # Python
 .env
 *.db
 __pycache__/
 *.pyc
+
+# Android / Gradle (Hide from Railway)
+gradlew
+gradlew.bat
+build.gradle
+settings.gradle
+gradle/
+app/
+local.properties
+.gradle
+.idea
+*.iml
