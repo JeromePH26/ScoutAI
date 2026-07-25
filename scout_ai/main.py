@@ -5,6 +5,9 @@ import logging
 import sys
 import random
 
+# Absoluter Import-Pfad für Server-Umgebungen
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 logging.basicConfig(
     filename='scout_ai/debug.log',
     level=logging.ERROR,
@@ -12,23 +15,25 @@ logging.basicConfig(
 )
 
 try:
-    from scraper import get_feeds
-    from ai_analyzer import analyze_snippet
-    from database import init_db, process_consensus
-    from notifier import send_telegram_alert
-except ImportError:
     from scout_ai.scraper import get_feeds
     from scout_ai.ai_analyzer import analyze_snippet
     from scout_ai.database import init_db, process_consensus
     from scout_ai.notifier import send_telegram_alert
+except ImportError:
+    # Fallback für lokale Ausführung
+    from scraper import get_feeds
+    from ai_analyzer import analyze_snippet
+    from database import init_db, process_consensus
+    from notifier import send_telegram_alert
 
+# --- SPY-MASTER MATRIX v5.6 ---
 SHADOW = ['site:twitter.com "confirmed" "injury" football', 'site:twitter.com "lineup leak"', '"betfair exchange" "unusual volume"']
 COMMUNITY = ["https://www.reddit.com/r/soccerbetting/.rss", "https://www.reddit.com/r/sportsbook/.rss", "https://www.reddit.com/r/mma/.rss"]
 GLOBAL = ["best bets expert analysis", "asian handicap picks today", "nba player props predictions", "football statistical analysis"]
 WIRES = ["https://www.espn.com/espn/rss/news", "https://www.hltv.org/rss/news", "https://www.betfair.com/hub/feed/"]
 
 def pulse_check(queries, mode_name, is_search=False):
-    print(f"[{time.strftime('%H:%M:%S')}] PULSE: Gathering {mode_name} for Cross-Reference...")
+    print(f"[{time.strftime('%H:%M:%S')}] PULSE: Gathering {mode_name}...")
 
     if is_search:
         target_urls = [f"https://news.google.com/rss/search?q={q.replace(' ', '+')}+when:1d&hl=en-US" for q in queries]
@@ -38,15 +43,12 @@ def pulse_check(queries, mode_name, is_search=False):
     articles = get_feeds(target_urls)
     if not articles: return
 
-    # --- CROSS-REFERENCE LOGIK v5.9.1 ---
-    # Wir bündeln jetzt bis zu 30 Top-Quellen für maximalen Vergleich
     bundle_text = ""
     for i, art in enumerate(articles[:30]):
         bundle_text += f"\n--- QUELLE {i+1} ({art.get('title')}) ---\n{art.get('snippet')}\n"
 
     print(f"   [*] AI-BUNDLE-ANALYSIS: {min(len(articles), 30)}/30 Top-Quellen werden verglichen...", end=" ")
 
-    # Die KI analysiert jetzt das GANZE Paket auf einmal
     analyses = analyze_snippet(bundle_text, is_bundle=True)
 
     if analyses and isinstance(analyses, list):
@@ -56,7 +58,6 @@ def pulse_check(queries, mode_name, is_search=False):
                 match = signal.get("match", "Unknown")
                 bet = signal.get("recommendation", {}).get("bet", "Unknown")
 
-                # Deduplizierung
                 _, is_new = process_consensus(match, bet, "Cross-Ref Engine", signal)
 
                 if is_new:
@@ -68,7 +69,7 @@ def pulse_check(queries, mode_name, is_search=False):
 
 def main():
     init_db()
-    print("=== SCOUT-AI v5.9 | CROSS-REFERENCE MASTERMIND ONLINE ===")
+    print("=== SCOUT-AI MASTERMIND v5.9 | RAILWAY EDITION ===")
 
     while True:
         try:
@@ -82,7 +83,7 @@ def main():
 
             for queries, name, is_search in tasks:
                 pulse_check(queries, name, is_search)
-                wait = random.randint(30, 60) # Kürzere Pausen, da wir Bündel schicken
+                wait = random.randint(45, 90)
                 time.sleep(wait)
 
         except Exception as e:
