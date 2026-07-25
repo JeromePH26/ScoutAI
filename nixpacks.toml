@@ -2,7 +2,7 @@
 providers = ["python"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["python -m pip install -r requirements.txt"]
 
 [start]
 cmd = "python scout_ai/main.py"
